@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR Treasure Hunt</title>
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+    <style>
+        :root {
+            --primary-yellow: #f1c40f;
+            --accent-red: #e74c3c;
+            --bg-glass: rgba(0, 0, 0, 0.7);
+            --font-main: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: var(--font-main);
+            background-color: #000;
+        }
+
+        /* UI Overlays */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .hud {
+            display: flex;
+            justify-content: space-between;
+            width: 90%;
+            padding: 20px;
+            pointer-events: auto;
+        }
+
+        .stat-box {
+            background: var(--bg-glass);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 50px;
+            border: 2px solid var(--primary-yellow);
+            font-size: 1.2rem;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        /* Screens */
+        .screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #2c3e50, #000);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        h1 {
+            font-size: 3rem;
+            color: var(--primary-yellow);
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 10px rgba(0,0,0,0.5);
+        }
+
+        .btn {
+            background: var(--primary-yellow);
+            color: #2c3e50;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.2s, background 0.2s;
+            pointer-events: auto;
+            margin-top: 20px;
+            text-transform: uppercase;
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+
+        #end-screen {
+            display: none;
+            background: rgba(0, 0, 0, 0.85);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* Instruction text */
+        p.desc {
+            font-size: 1.1rem;
+            max-width: 400px;
+            line-height: 1.5;
+            margin-bottom: 30px;
+        }
+
+        /* Feedback Animation */
+        .tap-feedback {
+            position: fixed;
+            color: var(--primary-yellow);
+            font-weight: bold;
+            pointer-events: none;
+            animation: floatUp 0.8s ease-out forwards;
+            font-size: 1.5rem;
+            z-index: 1000;
+        }
+
+        @keyframes floatUp {
+            0% { transform: translateY(0); opacity: 1; }
+            100% { transform: translateY(-100px); opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="start-screen" class="screen">
+        <h1>AR TREASURE HUNT</h1>
+        <p class="desc">Move your phone to find hidden treasures in your room! Tap them to collect points before time runs out.</p>
+        <button class="btn" onclick="startGame()">Start Adventure</button>
+    </div>
+
+    <div id="ui-layer">
+        <div class="hud hidden" id="hud-container">
+            <div class="stat-box">Score: <span id="score">0</span></div>
+            <div class="stat-box">Time: <span id="timer">30</span>s</div>
+        </div>
+    </div>
+
+    <div id="end-screen" class="screen">
+        <h1 id="result-title">TIME UP!</h1>
+        <p class="desc">Final Score</p>
+        <div style="font-size: 4rem; font-weight: bold; color: var(--primary-yellow);" id="final-score">0</div>
+        <button class="btn" onclick="restartGame()">Play Again</button>
+    </div>
+
+    <a-scene 
+        embedded 
+        arjs="sourceType: webcam; debugUIEnabled: false;" 
+        vr-mode-ui="enabled: false"
+        cursor="rayOrigin: mouse"
+        raycaster="objects: .clickable">
+        
+        <a-entity camera></a-entity>
+
+        <a-entity id="treasure-container"></a-entity>
+        
+        <a-light type="ambient" intensity="0.8"></a-light>
+        <a-light type="directional" position="1 2 1" intensity="0.5"></a-light>
+    </a-scene>
+
+    <script>
+        // Game Configuration
+        const GAME_DURATION = 30;
+        const TREASURE_TYPES = [
+            { type: 'coin', color: '#f1c40f', points: 10, scale: '0.3 0.3 0.05', geometry: 'cylinder' },
+            { type: 'gem', color: '#9b59b6', points: 20, scale: '0.3 0.4 0.3', geometry: 'octahedron' },
+            { type: 'star', color: '#e67e22', points: 15, scale: '0.4 0.4 0.1', geometry: 'torusKnot' },
+            { type: 'chest', color: '#e74c3c', points: 50, scale: '0.5 0.4 0.4', geometry: 'box' }
+        ];
+
+        let score = 0;
+        let timeLeft = GAME_DURATION;
+        let gameActive = false;
+        let timerInterval;
+
+        const treasureContainer = document.querySelector('#treasure-container');
+        const scoreEl = document.querySelector('#score');
+        const timerEl = document.querySelector('#timer');
+        const startScreen = document.querySelector('#start-screen');
+        const endScreen = document.querySelector('#end-screen');
+        const hudContainer = document.querySelector('#hud-container');
+
+        /**
+         * Initialize and Start Game
+         */
+        function startGame() {
+            startScreen.classList.add('hidden');
+            hudContainer.classList.remove('hidden');
+            endScreen.style.display = 'none';
+            
+            score = 0;
+            timeLeft = GAME_DURATION;
+            gameActive = true;
+            
+            scoreEl.textContent = score;
+            timerEl.textContent = timeLeft;
+
+            spawnTreasures(15);
+            
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                timerEl.textContent = timeLeft;
+                if (timeLeft <= 0) endGame("TIME UP!");
+            }, 1000);
+        }
+
+        /**
+         * Create random 3D objects in the scene
+         */
+        function spawnTreasures(count) {
+            treasureContainer.innerHTML = ''; // Clear existing
+            
+            for (let i = 0; i < count; i++) {
+                const data = TREASURE_TYPES[Math.floor(Math.random() * TREASURE_TYPES.length)];
+                const entity = document.createElement('a-entity');
+                
+                // Random position in a 360 degree radius around the user
+                // Using spherical coordinates for better AR distribution
+                const distance = 3 + Math.random() * 4;
+                const theta = Math.random() * 2 * Math.PI;
+                const phi = (Math.random() - 0.5) * Math.PI / 2;
+
+                const x = distance * Math.cos(phi) * Math.sin(theta);
+                const y = distance * Math.sin(phi) + 1.5; // Height offset
+                const z = distance * Math.cos(phi) * Math.cos(theta);
+
+                entity.setAttribute('position', `${x} ${y} ${-z}`);
+                entity.setAttribute('geometry', {
+                    primitive: data.geometry,
+                    radius: 0.5
+                });
+                entity.setAttribute('material', {
+                    color: data.color,
+                    metalness: 0.7,
+                    roughness: 0.2
+                });
+                entity.setAttribute('scale', data.scale);
+                entity.setAttribute('class', 'clickable');
+                
+                // Animation - Rotation
+                entity.setAttribute('animation', {
+                    property: 'rotation',
+                    to: '0 360 0',
+                    loop: true,
+                    dur: 3000,
+                    easing: 'linear'
+                });
+
+                // Click event
+                entity.addEventListener('click', function() {
+                    collectTreasure(entity, data.points);
+                });
+
+                treasureContainer.appendChild(entity);
+            }
+        }
+
+        /**
+         * Handle Treasure Collection
+         */
+        function collectTreasure(el, points) {
+            if (!gameActive) return;
+
+            // Score update
+            score += points;
+            scoreEl.textContent = score;
+
+            // Visual Feedback in DOM
+            const feedback = document.createElement('div');
+            feedback.className = 'tap-feedback';
+            feedback.textContent = `+${points}`;
+            feedback.style.left = (window.innerWidth / 2) + 'px';
+            feedback.style.top = (window.innerHeight / 2) + 'px';
+            document.body.appendChild(feedback);
+            setTimeout(() => feedback.remove(), 800);
+
+            // A-Frame Animation for removal
+            el.setAttribute('animation__out', {
+                property: 'scale',
+                to: '0 0 0',
+                dur: 300,
+                easing: 'easeInBack'
+            });
+
+            // Remove after animation
+            setTimeout(() => {
+                if (el.parentNode) {
+                    el.parentNode.removeChild(el);
+                    checkWinCondition();
+                }
+            }, 300);
+        }
+
+        function checkWinCondition() {
+            if (treasureContainer.children.length === 0 && gameActive) {
+                endGame("YOU WIN!");
+            }
+        }
+
+        function endGame(title) {
+            gameActive = false;
+            clearInterval(timerInterval);
+            
+            document.querySelector('#result-title').textContent = title;
+            document.querySelector('#final-score').textContent = score;
+            
+            hudContainer.classList.add('hidden');
+            endScreen.style.display = 'flex';
+        }
+
+        function restartGame() {
+            startGame();
+        }
+
+        // Handle window resize for AR.js
+        window.addEventListener('resize', function () {
+            const scene = document.querySelector('a-scene');
+            if (scene) scene.resize();
+        });
+    </script>
+</body>
+</html>
